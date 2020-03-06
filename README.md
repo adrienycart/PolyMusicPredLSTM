@@ -22,4 +22,10 @@ To run this code, create a virtual environment, then run: ```$ pip install -r re
 
 ## Training a model
 
-To train a model, use script_train
+To train a model, use the ```script_train.py``` script.
+Options can be displayed with  ```$ python script_train.py -h```.
+
+## Evaluating a model
+
+To train a model, use the ```script_eval.py``` script.
+Options can be displayed with  ```$ python script_eval.py -h```.
