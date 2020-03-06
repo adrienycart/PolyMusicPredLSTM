@@ -1,5 +1,6 @@
-from dataset import Dataset, ground_truth, safe_mkdir
-from model import Model, make_model_from_dataset, make_save_path, make_model_param, make_train_param
+from dataset import Dataset
+from model import make_model_from_dataset, make_model_param, make_train_param
+from utils import safe_mkdir
 
 import os
 
@@ -18,7 +19,7 @@ parser.add_argument('save_path',type=str,help='folder where the models will be s
 parser.add_argument("step", type=str, choices=["note_long","note_short", "time_long","time_short", "event"], help='timestep type used')
 parser.add_argument('--augment','-a',type=str,choices=["C","all","none"],help='type of data augmentation done (default all)',default='all')
 parser.add_argument("--diagRNN", help="Use diagonal RNN units", action="store_true")
-parser.add_argument('--loss','-l',type=str,choices=["H","S"],help='type of loss to use (default H)',default='H')
+parser.add_argument('--loss_type','-l',type=str,choices=["H","S"],help='type of loss to use (default H)',default='H')
 parser.add_argument('--w_tr',type=float,help='value for w_tr (default 1)',default=1)
 parser.add_argument('--w_ss',type=float,help='value for w_ss (default 1)',default=1)
 parser.add_argument('--alpha',type=float,help='value for alpha (default 0)',default=0)

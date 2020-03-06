@@ -1,4 +1,5 @@
-from dataset import Dataset, ground_truth, safe_mkdir
+from dataset import Dataset, ground_truth
+from utils import safe_mkdir
 import os
 import tensorflow as tf
 import numpy as np
@@ -185,14 +186,6 @@ class Model:
         self._enqueue_op = None
 
 
-        self._fake_inputs = None
-        self._fake_seq_lens = None
-        self._fake_labels = None
-        self._classif_loss = None
-        self._classif_logits = None
-        self._classif_accuracy = None
-
-
         #Call to create the graph
         self.cross_entropy
 
@@ -207,8 +200,6 @@ class Model:
             print "Activation function : ",self.activ
         if self.chunks:
             print "Chunks : ",self.chunks
-        if self.memory:
-            print "With memory"
 
 
 
@@ -372,7 +363,6 @@ class Model:
         if self._prediction is None:
             with tf.device(self.device_name):
                 chunks = self.chunks
-                memory = self.memory
                 n_notes = self.n_notes
                 activ = self.activ
                 n_classes = n_notes
@@ -1207,12 +1197,6 @@ class Model:
 
 
 
-                if self.classif_metric_type is not None:
-                    classif_loss = self.classif_loss
-
-                    loss = loss + classif_loss
-
-
             self._loss = loss
         return self._loss
 
@@ -1396,14 +1380,10 @@ class Model:
 
         drop = tf.get_default_graph().get_tensor_by_name("dropout"+suffix+":0")
 
-        if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"] or self.classif_metric_type in ["combined",'combined_norm',"XEtr_XEss"]:
+        if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"]:
             k_m = self.key_masks
             k_l = self.key_lists
 
-        if self.classif_metric_type is not None:
-            fake_x = self.fake_inputs
-            fake_y = self.fake_labels
-            fake_seq_len = self.fake_seq_lens
 
         print 'Starting computations : '+str(datetime.now())
 
@@ -1527,8 +1507,7 @@ class Model:
 
             i += 1
             # Shuffle the dataset before next epochs
-            if not (chunks and memory):
-                data.shuffle_one('train')
+            data.shuffle_one('train')
             print "_________________"
 
         return n_batch, n_epoch+epochs
@@ -1756,8 +1735,6 @@ def getTotalNumParameters():
             #print(dim)
             variable_parameters *= dim.value
         total_parameters += variable_parameters
-        print variable.name
-        print variable.get_shape()
     return total_parameters
 
 

@@ -5,7 +5,7 @@ from random import shuffle, sample
 import cPickle as pickle
 from datetime import datetime
 import copy
-from pianoroll import Pianoroll, PianorollMIREX
+from pianoroll import Pianoroll
 from utils import check_corrupt
 from tqdm import tqdm
 
@@ -278,15 +278,3 @@ class Dataset(object):
 
 def ground_truth(data):
     return data[:,:,1:]
-
-
-def safe_mkdir(dir,clean=False):
-    if not os.path.exists(dir):
-        os.makedirs(dir)
-    if clean and not os.listdir(dir) == [] :
-        old_path = os.path.join(dir,"old")
-        safe_mkdir(old_path)
-        for fn in os.listdir(dir):
-            full_path = os.path.join(dir,fn)
-            if not os.path.isdir(full_path):
-                os.rename(full_path,os.path.join(old_path,fn))

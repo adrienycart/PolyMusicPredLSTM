@@ -2,7 +2,7 @@ from random import shuffle
 import os
 import pretty_midi as pm
 import numpy as np
-import mir_eval.transcription
+
 
 def move_files(file_list,folder1,folder2):
     for midi_file in file_list:
@@ -260,41 +260,6 @@ def compute_eval_metrics_frame(data1,data2,threshold=None):
     F = Fmeasure(data1,data2)
     return F, prec, rec
 
-def compute_eval_metrics_note(data1,data2,fs,threshold=None,min_dur=None,tolerance=None):
-    if not threshold==None:
-        idx = data1[:,:,:] > threshold
-        data1 = idx.astype(int)
-
-    if min_dur==None:
-        data_filt = filter_short_notes(data1,thresh=int(round(fs*0.05)))
-    elif min_dur == 0:
-        data_filt = data1
-    else:
-        data_filt = filter_short_notes(data1,thresh=int(round(fs*min_dur)))
-    results = []
-
-    if tolerance == None:
-        tolerance = 0.05
-
-    for data, target in zip(data_filt,data2):
-        notes_est , intervals_est = get_notes_intervals(data, fs)
-        # print notes_est.shape
-        # print intervals_est.shape
-        notes_ref , intervals_ref = get_notes_intervals(target, fs)
-
-        # pairs = mir_eval.transcription.match_notes(intervals_ref, notes_ref, intervals_est, notes_est, onset_tolerance=0.8, pitch_tolerance=0.25, offset_ratio=None)
-        # for i,j in pairs:
-        #     print ""
-        #     print notes_ref[i], intervals_ref[i]
-        #     print notes_est[j], intervals_est[j]
-
-
-
-        P,R,F,_ = mir_eval.transcription.precision_recall_f1_overlap(intervals_ref,notes_ref,intervals_est,notes_est,pitch_tolerance=0.25,offset_ratio=None,onset_tolerance=tolerance)
-        results += [[F,P,R]]
-    results_mean = np.mean(np.array(results),axis=0)
-    return results_mean
-
 
 def get_best_thresh(inputs, targets,verbose=False):
 
@@ -326,3 +291,15 @@ def get_best_thresh(inputs, targets,verbose=False):
         print "Best thresh : "+str(max_thresh2)
 
     return max_thresh2, max_value2
+
+
+def safe_mkdir(dir,clean=False):
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    if clean and not os.listdir(dir) == [] :
+        old_path = os.path.join(dir,"old")
+        safe_mkdir(old_path)
+        for fn in os.listdir(dir):
+            full_path = os.path.join(dir,fn)
+            if not os.path.isdir(full_path):
+                os.rename(full_path,os.path.join(old_path,fn))
