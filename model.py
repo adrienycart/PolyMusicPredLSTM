@@ -1643,7 +1643,7 @@ class Model:
 
         cross, cross_trans, cross_steady, cross_len, cross_active, cross_key , combined, combined_norm,precision, recall, F_measure = sess.run([cross, cross_trans, cross_steady, cross_len, cross_active, cross_key, combined, combined_norm, prec, rec, F0], feed_dict = {x: data, seq_len: len_list, y: targets, thresh: threshold,k_mask:k_masks,k_lists:key_lists,k_thresh:key_thresh, a_thresh:active_thresh} )
 
-        return F_measure, precision, recall, cross, cross_trans, cross_steady, cross_len, cross_active,cross_key, combined, combined_norm
+        return F_measure, precision, recall, cross, cross_trans, cross_steady, cross_len, cross_active,cross_key, combined
 
 
     def compute_eval_metrics_from_outputs(self,inputs,outputs,len_list,key_masks,key_lists,threshold,expected_measures=False,logits=False,trim_outputs=True):

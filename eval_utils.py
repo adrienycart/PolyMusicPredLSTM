@@ -93,7 +93,7 @@ def get_best_eval_metrics(data,model,save_path,chunks=None,verbose=False,with_di
 
     if verbose :
         output = ''
-        for string,value in zip(["F: ",", P: ",", R: ",", XE: ",", XE_tr: ",", XE_st: ",", XE_l: ",", XE_a: ",", XE_k: ",", F_exp: ",", P_exp: ",", R_exp: "],results):
+        for string,value in zip(["F: ",", P: ",", R: ",", XE: ",", XE_tr: ",", XE_st: ",", XE_l: ",", XE_a: ",", XE_k: ",", S: "],results):
             output += string
             output += str(value)
         print output
