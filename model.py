@@ -4,10 +4,10 @@ import tensorflow as tf
 import numpy as np
 import scipy as scp
 from datetime import datetime
-import threading
+
 
 class ModLSTMCell(tf.contrib.rnn.RNNCell):
-    """Modified LSTM Cell """
+    """Modified LSTM Cell (directly copied from https://github.com/ycemsubakan/diagonal_rnns) """
 
     def __init__(self, num_units, initializer = tf.contrib.layers.xavier_initializer(uniform=True, seed=2, dtype=tf.float32), wform = 'diagonal'):
         self._num_units = num_units
@@ -156,23 +156,23 @@ class Model:
         self._pred_sigm = None
         self._pred_thresh = None
         self._cross_entropy = None
-        self._cross_entropy2 = None
+        self._cross_entropy_list = None
         self._cross_entropy_transition = None
-        self._cross_entropy_transition2 = None
+        self._cross_entropy_transition_list = None
         self._cross_entropy_length = None
-        self._cross_entropy_length2 = None
+        self._cross_entropy_length_list = None
         self._cross_entropy_steady = None
-        self._cross_entropy_steady2 = None
+        self._cross_entropy_steady_list = None
         self._cross_entropy_active = None
         self._cross_entropy_key = None
-        self._cross_entropy_key2 = None
+        self._cross_entropy_key_list = None
 
         self._combined_metric = None
-        self._combined_metric2 = None
+        self._combined_metric_list = None
         self._combined_metric_norm = None
-        self._combined_metric_norm2 = None
+        self._combined_metric_norm_list = None
         self._combined_metric_cw = None
-        self._combined_metric_cw2 = None
+        self._combined_metric_cw_list = None
 
         self._loss = None
         self._optimize = None
@@ -291,22 +291,6 @@ class Model:
 
 
     @property
-    def enqueue_op(self):
-        if self._enqueue_op is None:
-            with tf.device(self.device_name):
-                suffix = self.suffix
-                ## TEST
-                pred = self.prediction
-                print [x for x in tf.get_default_graph().get_operations() if x.type == "PlaceholderV2"]
-
-                keyInput = tf.get_default_graph().get_tensor_by_name("keyInput"+suffix+":0")
-                lengthInput = tf.get_default_graph().get_tensor_by_name("lengthInput"+suffix+":0")
-                seqInput = tf.get_default_graph().get_tensor_by_name("seqInput"+suffix+":0")
-
-                self._enqueue_op = self.queue.enqueue([keyInput, lengthInput, seqInput])
-        return self._enqueue_op
-
-    @property
     def inputs(self):
         if self._inputs is None:
             n_notes = self.n_notes
@@ -400,258 +384,53 @@ class Model:
                 suffix = self.suffix
 
 
-
-                if memory:
-                    print "coucou"
-
-                    keyInput = tf.placeholder(tf.string,name='keyInput'+suffix) # To identify each sequence
-                    lengthInput = tf.placeholder(tf.int32,name='lengthInput'+suffix) # Length of sequence
-                    seqInput = tf.placeholder(tf.float32, shape=[None,n_notes],name='seqInput'+suffix) # Input sequence
-
-                    #TODO : Abstract queue parameters
-                    self.queue = tf.RandomShuffleQueue(capacity=10, min_after_dequeue=3,
-                                              dtypes=[tf.string, tf.int32, tf.float32])
-
-                    W = tf.Variable(tf.truncated_normal([n_hidden,n_classes]),name="W"+suffix)
-                    b = tf.Variable(tf.truncated_normal([n_classes]),name="b"+suffix)
-
-                    initial_states = dict()
-
-                    cell = tf.contrib.rnn.LSTMBlockCell(n_hidden)
-                    initial_states["lstm_state_c"] = tf.zeros(cell.state_size[0], dtype=tf.float32)
-                    initial_states["lstm_state_h"] = tf.zeros(cell.state_size[1], dtype=tf.float32)
-
-                    # cells = list()
-                    # for i in range(0, 2):
-                    #     cell = tf.contrib.rnn.LSTMBlockCell(num_units=128) # Block LSTM version gives better performance #TODO Add linear projection option
-                    #     cell =  tf.contrib.rnn.DropoutWrapper(cell,input_keep_prob=1, output_keep_prob=1)
-                    #     cells.append(cell)
-                    #     initial_states["lstm_state_c_" + str(i)] = tf.zeros(cell.state_size[0], dtype=tf.float32)
-                    #     initial_states["lstm_state_h_" + str(i)] = tf.zeros(cell.state_size[1], dtype=tf.float32)
-                    # cell = tf.contrib.rnn.MultiRNNCell(cells)
+                x = self.inputs
+                seq_len = self.seq_lens
+                dropout = tf.placeholder_with_default(1.0, shape=(), name="dropout"+suffix)
 
 
+                if self.non_binary:
 
-                    key, contextT, sequenceIn = self.queue.dequeue()
-                    context = {"length" : tf.reshape(contextT, [])}
-                    sequences = {"inputs" : tf.reshape(sequenceIn, [contextT,n_notes])}
+                    n_outputs = self.non_binary
+                    x_expanded = tf.one_hot(tf.cast(x,tf.int32),depth=n_outputs,dtype=tf.float32)
+                    x_flat = tf.reshape(x,[-1,n_steps,n_classes*n_outputs])
 
-                    self.batch = tf.contrib.training.batch_sequences_with_states(
-                                    input_key=key,
-                                    input_sequences=sequences,
-                                    input_context=context,
-                                    input_length=tf.cast(context["length"], tf.int32),
-                                    initial_states=initial_states,
-                                    num_unroll=self.chunks,
-                                    batch_size= 3, #self.batch_size,
-                                    num_threads=10,
-                                    capacity= 3*10*2) #self.batch_size * 10 * 2)
+                    W = tf.Variable(tf.truncated_normal([n_hidden,n_classes*n_outputs]),name="W"+suffix)
+                    b = tf.Variable(tf.truncated_normal([n_classes*n_outputs]),name="b"+suffix)
 
-                    inputs = self.batch.sequences["inputs"]
+                    if self.cell_type == "LSTM":
+                        cell = tf.contrib.rnn.LSTMCell(n_hidden,state_is_tuple=True,forget_bias = 1.0)
+                    elif self.cell_type == "diagLSTM":
+                        cell = ModLSTMCell(n_hidden,tf.truncated_normal_initializer())
 
-                    inputs_by_time = tf.split(inputs, self.chunks, 1)
-                    inputs_by_time = [tf.squeeze(elem, squeeze_dims=1) for elem in inputs_by_time]
+                    outputs, _ = tf.nn.dynamic_rnn(cell,x,dtype=tf.float32,time_major=False)#,sequence_length=seq_len)
 
-                    print "#### SEQ_LEN"
-                    seq_len = self.batch.context["length"]
-                    print seq_len
-                    keyInput = tf.get_default_graph().get_tensor_by_name("keyInput"+suffix+":0")
-                    print keyInput
 
-                    state_name = initial_states.keys()
-                    outputs, state = tf.contrib.rnn.static_state_saving_rnn(cell, inputs_by_time, state_saver=self.batch,
-                                                  sequence_length=seq_len, state_name=state_name, scope='SSRNN')
+                    outputs = tf.reshape(outputs,[-1,n_hidden])
+                    pred = tf.matmul(outputs,W) + b
+                    pred = tf.reshape(pred,[-1,n_steps,n_notes,n_outputs])
+                    #drop last prediction of each sequence (you don't have ground truth for this one)
+                    pred = pred[:,:n_steps-1,:,:]
 
-                    W = tf.Variable(tf.truncated_normal([n_hidden,n_classes]),name="W"+suffix)
-                    b = tf.Variable(tf.truncated_normal([n_classes]),name="b"+suffix)
-
-                    logits = [tf.matmul(outputStep, W) + b for outputStep in outputs]
-                    pred = tf.stack(logits)
 
                 else:
 
-                    x = self.inputs
-                    #x = tf.placeholder("float", [None,None,n_notes],name="x"+suffix)
-                    seq_len = self.seq_lens
-                    dropout = tf.placeholder_with_default(1.0, shape=(), name="dropout"+suffix)
+                    W = tf.Variable(tf.truncated_normal([n_hidden,n_classes]),name="W"+suffix)
+                    b = tf.Variable(tf.truncated_normal([n_classes]),name="b"+suffix)
 
-                    if self.conv:
-                        if self.conv_config == 1:
-                            print "Conv config 1"
-                            #1D conv, 1 layer + fully connected
-                            conv = tf.layers.conv1d(tf.reshape(x, [-1, n_notes, 1]), 55, 12, padding="same", use_bias=True, activation=LeakyReLU)
-                            # conv2 = tf.layers.conv1d(conv1, 16, 4, padding="same", dilation_rate=12, use_bias=True, activation=LeakyReLU)
-                            # conv = tf.layers.conv1d(tf.concat([conv1,conv2],axis=2), 4, 1, padding="valid", use_bias=True, activation=LeakyReLU)
-                            conv = tf.layers.dense(tf.reshape(conv, [-1, n_notes*55]), 55, activation=LeakyReLU)
+                    if self.cell_type == "LSTM":
+                        cell = tf.contrib.rnn.LSTMCell(n_hidden,state_is_tuple=True,forget_bias = 1.0)
+                    elif self.cell_type == "diagLSTM":
+                        cell = ModLSTMCell(n_hidden,tf.truncated_normal_initializer())
 
-                            x = tf.reshape(conv, [-1, n_steps, 55])
-
-                        elif self.conv_config == 2:
-                            print "Conv config 2"
-                            #2D small conv, 2 layers + fully connected
-                            #Stack shifted versions of input as channels + 1D conv to keep causality (using 2D convolutions doesn't)
-                            x = tf.expand_dims(x, -1)
-                            #1st layer
-                            input = x
-                            shifted_x = x
-                            shape_x =  tf.shape(x)
-
-                            for i in range(4):
-                                zeros = tf.zeros([1,1,n_notes,1])
-                                zeros_tiled = tf.tile(zeros, tf.stack([shape_x[0], 1,1,1]))
-                                shifted_x = tf.concat([zeros_tiled, shifted_x[:,:-1,:,:]],1)
-                                input = tf.concat([input,shifted_x],3)
-                            input = tf.reshape(input, [-1, n_notes, 5])
-                            conv = tf.layers.conv1d(input, 64, 5, padding="same", use_bias=True, activation=LeakyReLU)
-                            #Dimensionality reduction
-                            conv = tf.layers.conv1d(conv, 25, 1, padding="same",use_bias=True,activation=LeakyReLU)
-                            conv = tf.layers.conv1d(conv, 1, 1, padding="same",use_bias=True,activation=LeakyReLU)
-
-                            #2nd layer
-                            x = tf.reshape(conv,[-1,n_steps,n_notes,1])
-                            input = x
-                            shifted_x = x
-                            shape_x =  tf.shape(x)
-                            for i in range(4):
-                                zeros = tf.zeros([1,1,n_notes,1])
-                                zeros_tiled = tf.tile(zeros, tf.stack([shape_x[0], 1,1,1]))
-                                shifted_x = tf.concat([zeros_tiled, shifted_x[:,:-1,:,:]],1)
-                                input = tf.concat([input,shifted_x],3)
-                            input = tf.reshape(input, [-1, n_notes, 5])
-                            conv = tf.layers.conv1d(input, 40, 5, padding="same", use_bias=True, activation=LeakyReLU)
-                            #Dimensionality reduction
-                            conv = tf.layers.conv1d(conv, 25, 1, padding="same",use_bias=True,activation=LeakyReLU)
-                            conv = tf.layers.conv1d(conv, 1, 1, padding="same",use_bias=True,activation=LeakyReLU)
+                    outputs, _ = tf.nn.dynamic_rnn(cell,x,dtype=tf.float32,time_major=False)#,sequence_length=seq_len)
 
 
-                            x = tf.reshape(conv, [-1, n_steps, n_notes])
-
-                        elif self.conv_config == 3:
-                            print "Conv config 3"
-                            #2D octave conv, 1 layer + fully connected
-                            #Stack shifted versions of input as channels + 1D conv to keep causality (using 2D convolutions doesn't)
-                            x = tf.expand_dims(x, -1)
-                            shape_x =  tf.shape(x)
-                            zeros = tf.zeros([1,1,n_notes,1])
-                            zeros_tiled = tf.tile(zeros, tf.stack([shape_x[0], 1,1,1]))
-                            shifted_x = tf.concat([zeros_tiled, x[:,:-1,:,:]],1)
-                            input = tf.concat([x,shifted_x],3)
-
-                            input = tf.reshape(input, [-1, n_notes, 2])
-
-                            conv = tf.layers.conv1d(input, 64, 12, padding="same", use_bias=True, activation=LeakyReLU)
-                            #Dimensionality reduction
-                            conv = tf.layers.conv1d(conv, 25, 1, padding="same",use_bias=True,activation=LeakyReLU)
-                            conv = tf.layers.conv1d(conv, 1, 1, padding="same",use_bias=True,activation=LeakyReLU)
-
-
-                            x = tf.reshape(conv, [-1, n_steps, n_notes])
-
-                        elif self.conv_config == 4:
-                            print "Conv config 4"
-                            ##1D conv, 1 layer + 1x1 convolutions : MUCH LESS PARAMETERS, just to compare with config 1
-                            conv = tf.layers.conv1d(tf.reshape(x, [-1, n_notes, 1]), 55, 12, padding="same", use_bias=True, activation=LeakyReLU)
-
-                            # conv2 = tf.layers.conv1d(conv1, 16, 4, padding="same", dilation_rate=12, use_bias=True, activation=LeakyReLU)
-                            conv = tf.layers.conv1d(conv, 25, 1, padding="same",use_bias=True,activation=LeakyReLU)
-                            conv = tf.layers.conv1d(conv, 1, 1, padding="same",use_bias=True,activation=LeakyReLU)
-
-                            x = tf.reshape(conv, [-1, n_steps, n_notes])
-
-                        elif self.conv_config == 5:
-                            print "Conv config 5"
-                            #Octave 1D filters + Dilated convolutions across octaves
-                            conv1 = tf.layers.conv1d(tf.reshape(x, [-1, n_notes, 1]), 64, 12, padding="same", use_bias=True, activation=LeakyReLU)
-                            conv2 = tf.layers.conv1d(conv1, 32, 3,dilation_rate=12, padding="same", use_bias=True, activation=LeakyReLU)
-                            # conv2 = tf.layers.conv1d(conv1, 16, 4, padding="same", dilation_rate=12, use_bias=True, activation=LeakyReLU)
-                            conv = tf.layers.conv1d(tf.concat([conv1,conv2],axis=2), 25, 1, padding="same", use_bias=True, activation=LeakyReLU)
-                            conv = tf.layers.conv1d(conv, 1, 1, padding="same",use_bias=True,activation=LeakyReLU)
-                            print conv
-                            x = tf.reshape(conv, [-1, n_steps, n_notes])
-
-
-                    if type(n_hidden) == int:
-
-                        if self.non_binary:
-
-                            n_outputs = self.non_binary
-                            x_expanded = tf.one_hot(tf.cast(x,tf.int32),depth=n_outputs,dtype=tf.float32)
-                            x_flat = tf.reshape(x,[-1,n_steps,n_classes*n_outputs])
-
-                            W = tf.Variable(tf.truncated_normal([n_hidden,n_classes*n_outputs]),name="W"+suffix)
-                            b = tf.Variable(tf.truncated_normal([n_classes*n_outputs]),name="b"+suffix)
-
-                            if self.cell_type == "LSTM":
-                                cell = tf.contrib.rnn.LSTMCell(n_hidden,state_is_tuple=True,forget_bias = 1.0)
-                            elif self.cell_type == "diagLSTM":
-                                cell = ModLSTMCell(n_hidden,tf.truncated_normal_initializer())
-
-                            outputs, _ = tf.nn.dynamic_rnn(cell,x,dtype=tf.float32,time_major=False)#,sequence_length=seq_len)
-
-
-                            outputs = tf.reshape(outputs,[-1,n_hidden])
-                            pred = tf.matmul(outputs,W) + b
-                            pred = tf.reshape(pred,[-1,n_steps,n_notes,n_outputs])
-                            #drop last prediction of each sequence (you don't have ground truth for this one)
-                            pred = pred[:,:n_steps-1,:,:]
-
-
-                        else:
-
-                            W = tf.Variable(tf.truncated_normal([n_hidden,n_classes]),name="W"+suffix)
-                            b = tf.Variable(tf.truncated_normal([n_classes]),name="b"+suffix)
-
-                            if self.cell_type == "LSTM":
-                                cell = tf.contrib.rnn.LSTMCell(n_hidden,state_is_tuple=True,forget_bias = 1.0)
-                            elif self.cell_type == "diagLSTM":
-                                cell = ModLSTMCell(n_hidden,tf.truncated_normal_initializer())
-
-                            outputs, _ = tf.nn.dynamic_rnn(cell,x,dtype=tf.float32,time_major=False)#,sequence_length=seq_len)
-
-
-                            outputs = tf.reshape(outputs,[-1,n_hidden])
-                            pred = tf.matmul(outputs,W) + b
-                            pred = tf.reshape(pred,[-1,n_steps,n_notes])
-                            #drop last prediction of each sequence (you don't have ground truth for this one)
-                            pred = pred[:,:n_steps-1,:]
-                            # batch*n_steps, 88*3
-
-
-                            # batch, n_steps, 88*3
-
-                            # batch, n_steps, 88,3
-
-
-                    else :
-                        n_layers = len(n_hidden)
-                        last_n_hid = n_hidden[-1]
-
-                        W = tf.Variable(tf.truncated_normal([last_n_hid,n_classes]),name="W"+suffix)
-                        b = tf.Variable(tf.truncated_normal([n_classes]),name="b"+suffix)
-
-                        cells = []
-
-                        if activ == 'sigm':
-                            act_fn = tf.sigmoid
-                        elif activ == 'relu':
-                            act_fn = tf.nn.relu
-                        elif activ == 'tanh':
-                            act_fn = tf.tanh
-
-                        for i in range(n_layers):
-                            n_hid = n_hidden[i]
-                            cell = tf.contrib.rnn.LSTMCell(n_hid, state_is_tuple=True,forget_bias = 1.0,activation=act_fn)
-                            cell = tf.contrib.rnn.DropoutWrapper(cell, input_keep_prob=dropout)
-                            cells += [cell]
-
-                        cells = tf.contrib.rnn.MultiRNNCell(cells, state_is_tuple=True)
-                        cells = tf.contrib.rnn.DropoutWrapper(cells, output_keep_prob=dropout)
-                        outputs, _ = tf.nn.dynamic_rnn(cells, x,dtype=tf.float32,time_major=False,sequence_length=seq_len)
-                        outputs = tf.reshape(outputs,[-1,last_n_hid])
-                        pred = tf.matmul(outputs,W) + b
-                        pred = tf.reshape(pred,[-1,n_steps,n_notes])
-                        #drop last prediction of each sequence (you don't have ground truth for this one)
-                        pred = pred[:,:n_steps-1,:]
+                    outputs = tf.reshape(outputs,[-1,n_hidden])
+                    pred = tf.matmul(outputs,W) + b
+                    pred = tf.reshape(pred,[-1,n_steps,n_notes])
+                    #drop last prediction of each sequence (you don't have ground truth for this one)
+                    pred = pred[:,:n_steps-1,:]
 
 
                 self._prediction = pred
@@ -716,16 +495,16 @@ class Model:
         #Mean cross entropy
         if self._cross_entropy is None:
             with tf.device(self.device_name):
-                cross_entropy = self.cross_entropy2
+                cross_entropy = self.cross_entropy_list
                 cross_entropy = tf.reduce_mean(cross_entropy)
                 self._cross_entropy = cross_entropy
         return self._cross_entropy
 
 
     @property
-    def cross_entropy2(self):
+    def cross_entropy_list(self):
         #Cross entropy as a vector of length batch_size
-        if self._cross_entropy2 is None:
+        if self._cross_entropy_list is None:
             with tf.device(self.device_name):
                 n_notes = self.n_notes
                 n_steps = self.n_steps
@@ -733,11 +512,11 @@ class Model:
                 y = self.labels
 
                 if self.non_binary:
-                    cross_entropy2 = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.prediction, labels=tf.cast(y,tf.int32)),axis=[1,2])
+                    cross_entropy_list = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.prediction, labels=tf.cast(y,tf.int32)),axis=[1,2])
                 else:
-                    cross_entropy2 = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.prediction, labels=y),axis=[1,2])
-                self._cross_entropy2 = cross_entropy2
-        return self._cross_entropy2
+                    cross_entropy_list = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.prediction, labels=y),axis=[1,2])
+                self._cross_entropy_list = cross_entropy_list
+        return self._cross_entropy_list
 
 
     def split_steady(self, x,*args):
@@ -821,21 +600,21 @@ class Model:
         return cross_entropy_trans
 
     @property
-    def cross_entropy_transition2(self):
-        if self._cross_entropy_transition2 is None:
+    def cross_entropy_transition_list(self):
+        if self._cross_entropy_transition_list is None:
             with tf.device(self.device_name):
 
                 cross_entropy_trans = self.get_cross_entropy_transition(self.inputs,self.prediction,self.labels,self.seq_lens)
 
-                self._cross_entropy_transition2 = cross_entropy_trans
-        return self._cross_entropy_transition2
+                self._cross_entropy_transition_list = cross_entropy_trans
+        return self._cross_entropy_transition_list
 
     @property
     def cross_entropy_transition(self):
         if self._cross_entropy_transition is None:
             with tf.device(self.device_name):
 
-                XEs = self.cross_entropy_transition2
+                XEs = self.cross_entropy_transition_list
                 XEs = tf.gather(XEs,tf.where(tf.logical_not(tf.is_nan(XEs))))
                 cross_entropy_trans = tf.reduce_mean(XEs)
 
@@ -875,14 +654,14 @@ class Model:
 
 
     @property
-    def cross_entropy_steady2(self):
-        if self._cross_entropy_steady2 is None:
+    def cross_entropy_steady_list(self):
+        if self._cross_entropy_steady_list is None:
             with tf.device(self.device_name):
 
                 cross_entropy_steady = self.get_cross_entropy_steady(self.inputs,self.prediction,self.labels,self.seq_lens)
 
-                self._cross_entropy_steady2 = cross_entropy_steady
-        return self._cross_entropy_steady2
+                self._cross_entropy_steady_list = cross_entropy_steady
+        return self._cross_entropy_steady_list
 
     @property
     def cross_entropy_steady(self):
@@ -890,7 +669,7 @@ class Model:
             with tf.device(self.device_name):
 
 
-                XEs = self.cross_entropy_steady2
+                XEs = self.cross_entropy_steady_list
                 XEs_no_nan = tf.gather(XEs,tf.where(tf.logical_not(tf.is_nan(XEs))))
                 cross_entropy_steady = tf.reduce_mean(XEs_no_nan)
 
@@ -899,8 +678,8 @@ class Model:
         return self._cross_entropy_steady
 
     @property
-    def cross_entropy_length2(self):
-        if self._cross_entropy_length2 is None:
+    def cross_entropy_length_list(self):
+        if self._cross_entropy_length_list is None:
             with tf.device(self.device_name):
                 n_notes = self.n_notes
                 n_steps = self.n_steps
@@ -917,14 +696,14 @@ class Model:
 
                 cross_entropy_length = tf.reduce_mean(cross_entropy_masked*n_steps,axis=[1,2])/tf.cast(seq_len,tf.float32)
 
-                self._cross_entropy_length2 = cross_entropy_length
-        return self._cross_entropy_length2
+                self._cross_entropy_length_list = cross_entropy_length
+        return self._cross_entropy_length_list
 
     @property
     def cross_entropy_length(self):
         if self._cross_entropy_length is None:
             with tf.device(self.device_name):
-                cross_entropy_length = self.cross_entropy_length2
+                cross_entropy_length = self.cross_entropy_length_list
                 cross_entropy_length = tf.reduce_mean(cross_entropy_length)
 
                 self._cross_entropy_length = cross_entropy_length
@@ -966,6 +745,10 @@ class Model:
 
 
     def get_cross_entropy_key(self,x,pred,y,seq_lens):
+        ### Out of all these variants, we only end up using:
+        ##  key_XE, key_XE_tr and key_XE_ss (indices 0, 2 and 3)
+
+
         def octave_wrap(tensor):
             #Tensor has to be of shape [None, n_steps,n_notes]
             tensor_pad = tf.pad(tensor,((0,0),(0,0),(0,12-(n_notes%12))))
@@ -1154,28 +937,29 @@ class Model:
         output = tf.map_fn(steady_one_norm,(pred_masked,x,seq_lens,XE_mask,key_masks),dtype=(tf.float32,tf.int32,tf.float32,tf.float32,tf.float32))
         key_XE_ss_n = output[0]
 
-
+        ## We only use: key_XE, key_XE_tr and key_XE_ss
         cross_entropy_key_masked = [key_XE,key_XE_avg,key_XE_tr,key_XE_ss,in_key_prop,key_XE_n,key_XE_tr_n,key_XE_ss_n]
         return cross_entropy_key_masked
 
 
     @property
-    def cross_entropy_key2(self):
-        if self._cross_entropy_key2 is None:
+    def cross_entropy_key_list(self):
+        if self._cross_entropy_key_list is None:
             with tf.device(self.device_name):
 
                 cross_entropy_key_masked = self.get_cross_entropy_key(self.inputs,self.prediction,self.labels,self.seq_lens)
 
-                self._cross_entropy_key2 = cross_entropy_key_masked
-        return self._cross_entropy_key2
+                self._cross_entropy_key_list = cross_entropy_key_masked
+        return self._cross_entropy_key_list
 
     @property
     def cross_entropy_key(self):
         if self._cross_entropy_key is None:
             with tf.device(self.device_name):
+                ### Out of all these variants, we only end up using:
+                ##  key_XE, key_XE_tr and key_XE_ss (indices 0, 2 and 3)
 
-
-                key_XE,key_XE_avg,key_XE_tr,key_XE_ss,in_key_prop,key_XE_n,key_XE_tr_n,key_XE_ss_n = self.cross_entropy_key2
+                key_XE,key_XE_avg,key_XE_tr,key_XE_ss,in_key_prop,key_XE_n,key_XE_tr_n,key_XE_ss_n = self.cross_entropy_key_list
 
                 key_XE = tf.reduce_mean(key_XE)
 
@@ -1212,12 +996,12 @@ class Model:
 
 
     @property
-    def combined_metric2(self):
-        if self._combined_metric2 is None:
+    def combined_metric_list(self):
+        if self._combined_metric_list is None:
             with tf.device(self.device_name):
-                XE_tr = self.cross_entropy_transition2
-                XE_ss = self.cross_entropy_steady2
-                XE_k = self.cross_entropy_key2
+                XE_tr = self.cross_entropy_transition_list
+                XE_ss = self.cross_entropy_steady_list
+                XE_k = self.cross_entropy_key_list
                 XE_ktr = XE_k[2]
                 XE_kss = XE_k[3]
 
@@ -1241,14 +1025,14 @@ class Model:
                 combined_metric = tf.sqrt(tf.pow((w_tr*XE_tr+w_ss*XE_ss),1+alpha)*tf.pow((w_tr*XE_ktr+w_ss*XE_kss),1-alpha))
 
 
-                self._combined_metric2 = combined_metric
-        return self._combined_metric2
+                self._combined_metric_list = combined_metric
+        return self._combined_metric_list
 
     @property
     def combined_metric(self):
         if self._combined_metric is None:
             with tf.device(self.device_name):
-                combined_metric = self.combined_metric2
+                combined_metric = self.combined_metric_list
 
                 combined_metric = tf.gather(combined_metric,tf.where(tf.logical_not(tf.is_nan(combined_metric))))
                 combined_metric = tf.reduce_mean(combined_metric)
@@ -1258,12 +1042,12 @@ class Model:
         return self._combined_metric
 
     @property
-    def combined_metric_norm2(self):
-        if self._combined_metric_norm2 is None:
+    def combined_metric_norm_list(self):
+        if self._combined_metric_norm_list is None:
             with tf.device(self.device_name):
-                XE_tr = self.cross_entropy_transition2
-                XE_ss = self.cross_entropy_steady2
-                XE_k = self.cross_entropy_key2
+                XE_tr = self.cross_entropy_transition_list
+                XE_ss = self.cross_entropy_steady_list
+                XE_k = self.cross_entropy_key_list
                 XE_ktr = XE_k[6]
                 XE_kss = XE_k[7]
 
@@ -1271,27 +1055,19 @@ class Model:
                 w_tr = w_tr_ss[0]
                 w_ss = w_tr_ss[1]
 
-                # no_nan_mask = tf.logical_or(tf.is_nan(XE_tr),tf.is_nan(XE_tr))
-                # no_nan_mask = tf.logical_or(no_nan_mask,tf.is_nan(XE_ktr))
-                # no_nan_mask = tf.logical_or(no_nan_mask,tf.is_nan(XE_kss))
-                # no_nan_mask = tf.logical_not(no_nan_mask)
-                #
-                # XE_tr = tf.gather(XE_tr,tf.where(no_nan_mask))
-                # XE_ss = tf.gather(XE_ss,tf.where(no_nan_mask))
-                # XE_ktr = tf.gather(XE_ktr,tf.where(no_nan_mask))
-                # XE_kss = tf.gather(XE_kss,tf.where(no_nan_mask))
+
 
                 combined_metric_norm = tf.sqrt((w_tr*XE_tr+w_ss*XE_ss)*(w_tr*XE_ktr+w_ss*XE_kss))
 
 
-                self._combined_metric_norm2 = combined_metric_norm
-        return self._combined_metric_norm2
+                self._combined_metric_norm_list = combined_metric_norm
+        return self._combined_metric_norm_list
 
     @property
     def combined_metric_norm(self):
         if self._combined_metric_norm is None:
             with tf.device(self.device_name):
-                combined_metric = self.combined_metric_norm2
+                combined_metric = self.combined_metric_norm_list
 
                 combined_metric = tf.gather(combined_metric,tf.where(tf.logical_not(tf.is_nan(combined_metric))))
                 combined_metric = tf.reduce_mean(combined_metric)
@@ -1301,8 +1077,8 @@ class Model:
         return self._combined_metric_norm
 
     @property
-    def combined_metric_cw2(self):
-        if self._combined_metric_cw2 is None:
+    def combined_metric_cw_list(self):
+        if self._combined_metric_cw_list is None:
             with tf.device(self.device_name):
                 w_tr_ss = self.weights_tr_ss
                 w_tr = w_tr_ss[0]
@@ -1376,14 +1152,14 @@ class Model:
 
 
 
-                self._combined_metric_cw2 = combined_cw
-        return self._combined_metric_cw2
+                self._combined_metric_cw_list = combined_cw
+        return self._combined_metric_cw_list
 
     @property
     def combined_metric_cw(self):
         if self._combined_metric_cw is None:
             with tf.device(self.device_name):
-                combined_metric = self.combined_metric_cw2
+                combined_metric = self.combined_metric_cw_list
 
                 combined_metric = tf.gather(combined_metric,tf.where(tf.logical_not(tf.is_nan(combined_metric))))
                 combined_metric = tf.reduce_mean(combined_metric)
@@ -1412,8 +1188,8 @@ class Model:
                     loss = self.combined_metric_cw
 
                 elif self.loss_type == "XEtr_XEss":
-                    XE_tr = self.cross_entropy_transition2
-                    XE_ss = self.cross_entropy_steady2
+                    XE_tr = self.cross_entropy_transition_list
+                    XE_ss = self.cross_entropy_steady_list
 
                     w_tr_ss = self.weights_tr_ss
                     w_tr = w_tr_ss[0]
@@ -1441,122 +1217,6 @@ class Model:
         return self._loss
 
 
-
-    @property
-    def fake_inputs(self):
-        if self._fake_inputs is None:
-            n_notes = self.n_notes
-            n_steps = self.n_steps
-            suffix = self.suffix
-
-            x = tf.placeholder("float", [None,n_steps,n_notes],name="fake_x"+suffix)
-
-            self._fake_inputs = x
-        return self._fake_inputs
-
-    @property
-    def fake_seq_lens(self):
-        if self._fake_seq_lens is None:
-            suffix = self.suffix
-            seq_len = tf.placeholder("int32",[None], name="fake_seq_len"+suffix)
-
-            self._fake_seq_lens = seq_len
-        return self._fake_seq_lens
-
-    @property
-    def fake_labels(self):
-        if self._fake_labels is None:
-            n_notes = self.n_notes
-            n_steps = self.n_steps
-            suffix = self.suffix
-
-
-            y = tf.placeholder("float", [None,n_steps-1,n_notes],name="fake_y"+suffix)
-
-            self._fake_labels = y
-        return self._fake_labels
-
-    @property
-    def classif_logits(self):
-        if self._classif_logits is None:
-            n_hidden = self.n_hidden
-            n_notes = n_classes = self.n_notes
-            n_steps = self.n_steps
-            x = self.fake_inputs
-
-            W = [var for var in tf.global_variables() if var.op.name=="W"+self.suffix][0]
-            b = [var for var in tf.global_variables() if var.op.name=="b"+self.suffix][0]
-
-            with tf.variable_scope(tf.get_variable_scope(), reuse=True):
-                if self.cell_type == "LSTM":
-                    cell = tf.contrib.rnn.LSTMCell(n_hidden,state_is_tuple=True,forget_bias = 1.0)
-                elif self.cell_type == "diagLSTM":
-                    raise ValueError("classification not available with diagLSTM cells!")
-
-                outputs, _ = tf.nn.dynamic_rnn(cell,x,dtype=tf.float32,time_major=False)#,sequence_length=seq_len)
-
-            outputs = tf.reshape(outputs,[-1,n_hidden])
-            pred = tf.matmul(outputs,W) + b
-
-            pred = tf.reshape(pred,[-1,n_steps,n_notes])
-            #drop last prediction of each sequence (you don't have ground truth for this one)
-            fake_pred = pred[:,:n_steps-1,:]
-
-            if self.classif_metric_type == "XE":
-                real_metric = self.cross_entropy2
-                fake_metric = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=fake_pred, labels=self.fake_labels),axis=[1,2])
-            elif self.classif_metric_type == "XE_tr":
-                real_metric = self.cross_entropy_transition2
-                fake_metric = self.get_cross_entropy_transition(x,fake_pred,self.fake_labels,self.fake_seq_lens)
-
-            elif self.classif_metric_type == "combined":
-                real_metric = self.combined_metric2
-
-                fake_XEtr = self.get_cross_entropy_transition(x,fake_pred,self.fake_labels,self.fake_seq_lens)
-                fake_XEss = self.get_cross_entropy_steady(x,fake_pred,self.fake_labels,self.fake_seq_lens)
-                fake_XEk = self.get_cross_entropy_key(x,fake_pred,self.fake_labels,self.fake_seq_lens)
-                fake_XE_ktr = fake_XEk[2]
-                fake_XE_kss = fake_XEk[3]
-
-                w_tr_ss = self.weights_tr_ss
-                w_tr = w_tr_ss[0]
-                w_ss = w_tr_ss[1]
-
-                fake_metric = tf.sqrt((w_tr*fake_XEtr+w_ss*fake_XEss)*(w_tr*fake_XE_ktr+w_ss*fake_XE_kss))
-
-            logits = tf.concat([tf.expand_dims(real_metric,axis=[1]),tf.expand_dims(fake_metric,axis=[1])],axis=1)
-
-            self._classif_logits = logits
-        return self._classif_logits
-
-
-    @property
-    def classif_loss(self):
-        if self._classif_loss is None:
-            with tf.device(self.device_name):
-
-                logits = self.classif_logits
-                # We want to choose the one that minimises logits
-                logits = -logits
-                classif_loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.zeros([tf.shape(logits)[0]],dtype=tf.int32), logits=logits))
-
-
-                self._classif_loss = classif_loss
-        return self._classif_loss
-
-    @property
-    def classif_accuracy(self):
-        if self._classif_accuracy is None:
-            with tf.device(self.device_name):
-
-                logits = self.classif_logits
-                correct = tf.less(logits[:,0],logits[:,1])
-                correct_percentage = tf.reduce_mean(tf.cast(correct,tf.float32))
-
-
-                self._classif_accuracy = correct_percentage
-        return self._classif_accuracy
-
     @property
     def optimize(self):
         if self._optimize is None:
@@ -1576,6 +1236,8 @@ class Model:
         return self._optimize
 
     def _run_by_batch(self,sess,op,feed_dict,batch_size,mean=True):
+        ### WARNING: this does not work with any op argument
+
         suffix = self.suffix
         x = self.inputs
         try:
@@ -1618,39 +1280,23 @@ class Model:
 
     def extract_data(self,dataset,subset,with_keys=False):
         chunks = self.chunks
-        memory = self.memory
 
         if chunks:
-            if memory:
-                data_raw, lengths = dataset.get_dataset_chunks(subset,chunks)
 
-                #TODO : transpose data properly
-            else:
-                data_raw, lengths = dataset.get_dataset_chunks_no_pad(subset,chunks)
+            data_raw, lengths = dataset.get_dataset_chunks_no_pad(subset,chunks)
         else :
-            if self.classif_metric_type is None:
-                if not with_keys:
-                    data_raw, lengths = dataset.get_dataset(subset)
-                else:
-                    data_raw, lengths, names, key_masks, key_lists = dataset.get_dataset(subset,with_names=True,with_key_masks=True)
+
+            if not with_keys:
+                data_raw, lengths = dataset.get_dataset(subset)
             else:
-                if not with_keys:
-                    data_raw,data_fake_raw, lengths, lengths_fake = dataset.get_dataset(subset)
-                else:
-                    data_raw,data_fake_raw, lengths, lengths_fake, names, key_masks, key_lists = dataset.get_dataset(subset,with_names=True,with_key_masks=True)
+                data_raw, lengths, names, key_masks, key_lists = dataset.get_dataset(subset,with_names=True,with_key_masks=True)
 
-        if self.classif_metric_type is None:
-            data = self._transpose_data(data_raw)
-            target = self._transpose_data(ground_truth(data_raw))
 
-            output = [data,target,lengths]
-        else:
-            data = self._transpose_data(data_raw)
-            target = self._transpose_data(ground_truth(data_raw))
-            data_fake = self._transpose_data(data_fake_raw)
-            target_fake = self._transpose_data(ground_truth(data_fake_raw))
+        data = self._transpose_data(data_raw)
+        target = self._transpose_data(ground_truth(data_raw))
 
-            output = [data,target,lengths,data_fake,target_fake,lengths_fake]
+        output = [data,target,lengths]
+
         if with_keys:
             k_masks = self._transpose_data(key_masks)
             output += [names,k_masks,key_lists]
@@ -1724,25 +1370,6 @@ class Model:
         return outputs
 
 
-    def load_and_enqueue(self,data,keyInput, lengthInput,seqInput,enqueue_op,sess):
-
-        run = True
-        key = 0 # Unique key for every sample, even over multiple epochs (otherwise the queue could be filled up with two same-key examples)
-        while run:
-            for pr in data.train:
-                current_seq = np.transpose(pr.roll.astype(float),[1,0])
-                try:
-                    sess.run(enqueue_op, feed_dict={keyInput: str(key),
-                                              lengthInput: current_seq.shape[1],
-                                            seqInput: current_seq},
-                                    options=tf.RunOptions(timeout_in_ms=60000))
-                except tf.errors.DeadlineExceededError as e:
-                    print("Timeout while waiting to enqueue into input queue! Stopping input queue thread!")
-                    run = False
-                    break
-                key += 1
-            print "Finished enqueueing all samples!"
-
     def perform_training(self,data,save_path,train_param,sess,saver,train_writer,ckpt_save_path,summary_batch, summary_epoch,n_batch=0,n_epoch=0):
         #Unpack values
         for key,val in train_param.items():
@@ -1750,274 +1377,159 @@ class Model:
 
 
         chunks = self.chunks
-        memory = self.memory
 
 
         optimizer = self.optimize
         cross_entropy = self.cross_entropy
-        cross_entropy2= self.cross_entropy2
+        cross_entropy_list= self.cross_entropy_list
         precision = self.precision
         recall = self.recall
         f_measure = self.f_measure
         suffix = self.suffix
 
 
-        # print [var.name for var in tf.global_variables()]
 
-        #print optimizer
-        #print self.prediction
 
-        #collec=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
-        #for variable in collec:
-        #    print variable.name
+        x = self.inputs
+        y = self.labels
+        seq_len = self.seq_lens
 
-        if not memory:
-            x = self.inputs
-            y = self.labels
-            seq_len = self.seq_lens
+        drop = tf.get_default_graph().get_tensor_by_name("dropout"+suffix+":0")
 
-            drop = tf.get_default_graph().get_tensor_by_name("dropout"+suffix+":0")
+        if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"] or self.classif_metric_type in ["combined",'combined_norm',"XEtr_XEss"]:
+            k_m = self.key_masks
+            k_l = self.key_lists
 
-            if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"] or self.classif_metric_type in ["combined",'combined_norm',"XEtr_XEss"]:
-                k_m = self.key_masks
-                k_l = self.key_lists
-
-            if self.classif_metric_type is not None:
-                fake_x = self.fake_inputs
-                fake_y = self.fake_labels
-                fake_seq_len = self.fake_seq_lens
+        if self.classif_metric_type is not None:
+            fake_x = self.fake_inputs
+            fake_y = self.fake_labels
+            fake_seq_len = self.fake_seq_lens
 
         print 'Starting computations : '+str(datetime.now())
 
-        if memory :
 
-            keyInput = tf.get_default_graph().get_tensor_by_name("keyInput"+suffix+":0")
-            lengthInput = tf.get_default_graph().get_tensor_by_name("lengthInput"+suffix+":0")
-            seqInput = tf.get_default_graph().get_tensor_by_name("seqInput"+suffix+":0")
+        print "Total number of parameters:", getTotalNumParameters()
+        if early_stop:
+            best_cross = 100000
+            epoch_since_best = 0
+            saver_best = saver[1]
+            saver = saver[0]
 
-            enqueue_op = self.queue.enqueue([keyInput, lengthInput, seqInput])
-
-            ####################
-
-            key = 0 # Unique key for every sample, even over multiple epochs (otherwise the queue could be filled up with two same-key examples)
-            print self.batch_size
-
-            for i in range(epochs):
-                for pr in data.train:
-                    current_seq = np.transpose(pr.roll.astype(float),[1,0])
-                    try:
-                        print "enqueuing..."
-                        sess.run(enqueue_op, feed_dict={keyInput: str(key),
-                                                  lengthInput: current_seq.shape[1],
-                                                seqInput: current_seq},
-                                        options=tf.RunOptions(timeout_in_ms=60000))
-                        print "enqueued "+pr.name
-                    except tf.errors.DeadlineExceededError as e:
-                        print("Timeout while waiting to enqueue into input queue! Stopping input queue thread!")
-                        run = False
-                        break
-                    key += 1
-                print "Finished enqueueing all samples!"
-
-                batch_size = len(data.train)
-                max_len = data.max_len #max(data.lengths['train'])
-                no_of_batches = int(np.ceil(float(max_len)/chunks))
-
-                for j in range(no_of_batches):
-                    print "batch ", j
-                    _,cross_b,summary_b = sess.run([optimizer,cross_entropy,summary_batch])
-                    print "Batch "+str(j)+ ", Cross entropy = "+"{:.5f}".format(cross_b)
-
-            ####################
-
-            # with tf.device("/cpu:0"):
-            #     t = threading.Thread(target=self.load_and_enqueue, args=[data, keyInput, lengthInput,seqInput,enqueue_op,sess])
-            #     t.start()
+        i = n_epoch
+        while i < n_epoch+epochs and epoch_since_best<early_stop_epochs:
+            # print 1
+            start_epoch = datetime.now()
+            ptr = 0
 
 
-            # len_dataset = len(data.train)
-            # max_iter = int(round(len_dataset*epochs/float(batch_size)))
-            #
-            # i = 0
-            # while i<max_iter:
-            #     i+=1
-            #
-            #     _,cross_b,summary_b = sess.run([optimizer,cross_entropy,summary_batch])
-            #
-            #     if i%display_step==0:
-            #         print "Batch "+str(j)+ ", Cross entropy = "+"{:.5f}".format(cross_b)
-            #         if summarize:
-            #             train_writer.add_summary(summary_b,global_step=n_batch)
-            #
-            #
-            #     if i % len_dataset == 0:
-            #         if (i/save_step == 0 or i == epochs-1):
-            #             saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"),global_step=i)
-            #         else :
-            #             saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"))
-            #         print("Model saved in file: %s" % saved)
+            if self.loss_type == "XE":
+                training_data, training_target, training_lengths = self.extract_data(data,'train')
+                valid_data, valid_target, valid_lengths = self.extract_data(data,'valid')
+            elif self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"]:
+                training_data, training_target, training_lengths, training_names, training_k_masks, training_k_lists = self.extract_data(data,'train',with_keys=True)
+                valid_data, valid_target, valid_lengths, valid_names, valid_k_masks, valid_k_lists = self.extract_data(data,'valid',with_keys=True)
 
-            print("Stopping custom input thread")
-            sess.run(self.queue.close())  # Then close the input queue
-            t.join(timeout=1)
 
-            # Close session, clear computational graph
-            sess.close()
-            tf.reset_default_graph()
+            # n_files = training_data.shape[0]
+            n_files = len(data.train)
+            no_of_batches = int(np.ceil(float(n_files)/batch_size))
+
+            display_step = max(int(round(float(no_of_batches)/display_per_epoch)),1)
 
 
 
+            for j in range(no_of_batches):
+                # print "batch",j
+
+                batch_x = training_data[ptr:ptr+batch_size]
+                batch_y = training_target[ptr:ptr+batch_size]
+                batch_lens = training_lengths[ptr:ptr+batch_size]
 
 
-        else:
-            print "Total number of parameters:", getTotalNumParameters()
-            if early_stop:
-                best_cross = 100000
-                epoch_since_best = 0
-                saver_best = saver[1]
-                saver = saver[0]
+                train_dict = {x: batch_x, y: batch_y, seq_len: batch_lens, drop: dropout}
 
-            i = n_epoch
-            while i < n_epoch+epochs and epoch_since_best<early_stop_epochs:
-                # print 1
-                start_epoch = datetime.now()
-                ptr = 0
+                if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"]:
+                    batch_names = training_names[ptr:ptr+batch_size]
+                    # print batch_names
+                    # print batch_lens
+                    batch_k_masks = training_k_masks[ptr:ptr+batch_size]
+                    batch_k_lists = training_k_lists[ptr:ptr+batch_size]
+                    train_dict.update({k_m:batch_k_masks,k_l:batch_k_lists})
 
-                if self.classif_metric_type is  None:
+                ptr += batch_size
+
+                # print 'ready to run'
+                sess.run(optimizer, feed_dict=train_dict)
+                # print 'optim ran'
+
+                if j%display_step == 0 :
+                    # print batch_names
                     if self.loss_type == "XE":
-                        training_data, training_target, training_lengths = self.extract_data(data,'train')
-                        valid_data, valid_target, valid_lengths = self.extract_data(data,'valid')
-                    elif self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"]:
-                        training_data, training_target, training_lengths, training_names, training_k_masks, training_k_lists = self.extract_data(data,'train',with_keys=True)
-                        valid_data, valid_target, valid_lengths, valid_names, valid_k_masks, valid_k_lists = self.extract_data(data,'valid',with_keys=True)
-                else:
-                    if self.loss_type == "XE" and self.classif_metric_type in ['XE','XE_tr']:
-                        training_data, training_target, training_lengths,fake_training_data, fake_training_target, fake_training_lengths = self.extract_data(data,'train')
-                        valid_data, valid_target, valid_lengths,fake_valid_data, fake_valid_target, fake_valid_lengths = self.extract_data(data,'valid')
-                    elif self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"] or self.classif_metric_type in ["combined",'combined_norm',"XEtr_XEss"]:
-                        training_data, training_target, training_lengths,fake_training_data, fake_training_target, fake_training_lengths, training_names, training_k_masks, training_k_lists = self.extract_data(data,'train',with_keys=True)
-                        valid_data, valid_target, valid_lengths,fake_valid_data, fake_valid_target, fake_valid_lengths, valid_names, valid_k_masks, valid_k_lists = self.extract_data(data,'valid',with_keys=True)
-
-                # print 2
-                if chunks and memory:
-                    batch_size = training_data.shape[0]
-                    max_len = max(data.lengths['train'])
-                    no_of_batches = int(np.ceil(float(max_len)/chunks))
-                else:
-                    # n_files = training_data.shape[0]
-                    n_files = len(data.train)
-                    no_of_batches = int(np.ceil(float(n_files)/batch_size))
-
-                display_step = max(int(round(float(no_of_batches)/display_per_epoch)),1)
-
-
-
-                for j in range(no_of_batches):
-                    # print "batch",j
-
-                    batch_x = training_data[ptr:ptr+batch_size]
-                    batch_y = training_target[ptr:ptr+batch_size]
-                    batch_lens = training_lengths[ptr:ptr+batch_size]
-
-
-                    train_dict = {x: batch_x, y: batch_y, seq_len: batch_lens, drop: dropout}
-
-                    if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"] or self.classif_metric_type in ["combined",'combined_norm',"XEtr_XEss"]:
-                        batch_names = training_names[ptr:ptr+batch_size]
-                        # print batch_names
-                        # print batch_lens
-                        batch_k_masks = training_k_masks[ptr:ptr+batch_size]
-                        batch_k_lists = training_k_lists[ptr:ptr+batch_size]
-                        train_dict.update({k_m:batch_k_masks,k_l:batch_k_lists})
-
-                    if self.classif_metric_type is not None:
-                        fake_batch_x = fake_training_data[ptr:ptr+batch_size]
-                        fake_batch_y = fake_training_target[ptr:ptr+batch_size]
-                        fake_batch_lens = fake_training_lengths[ptr:ptr+batch_size]
-                        train_dict.update({fake_x: fake_batch_x, fake_y: fake_batch_y, fake_seq_len: fake_batch_lens})
-
-
-                    ptr += batch_size
-
-                    # print 'ready to run'
-                    sess.run(optimizer, feed_dict=train_dict)
-                    # print 'optim ran'
-
-                    if j%display_step == 0 :
-                        # print batch_names
-                        if self.loss_type == "XE":
-                            cross_batch = sess.run(self.loss, feed_dict=train_dict)
-                        else:
-                            cross_batch = sess.run([self.loss,self.cross_entropy], feed_dict=train_dict)
-                        print_str = "Batch "+str(j)+ ", Cross entropy = "+str(cross_batch)
-                        if self.classif_metric_type is not None:
-                            acc_batch = sess.run([self.classif_accuracy], feed_dict=train_dict)
-                            print_str += ', classif acc = '+str(acc_batch)
-
-                        print print_str
-                        if summarize:
-                            summary_b = sess.run(summary_batch,feed_dict=train_dict)
-                            train_writer.add_summary(summary_b,global_step=n_batch)
-                    n_batch += 1
-
-
-                valid_dict = {x: valid_data, y: valid_target, seq_len: valid_lengths}
-                if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"] or self.classif_metric_type in ["combined",'combined_norm',"XEtr_XEss"]:
-                    valid_dict.update({k_m:valid_k_masks,k_l:valid_k_lists})
-                if self.classif_metric_type is not None:
-                    valid_dict.update({fake_x: fake_valid_data, fake_y: fake_valid_target, fake_seq_len: fake_valid_lengths})
-
-
-                if self.loss_type == "XE" and self.classif_metric_type is None:
-                    cross = self._run_by_batch(sess,cross_entropy2,valid_dict,batch_size)
-                else:
-                    cross = sess.run([self.loss,self.cross_entropy], feed_dict=valid_dict)
-                print_str = "Epoch: " + str(i) + ", Cross Entropy = " + str(cross)
-                if self.classif_metric_type is not None:
-                    class_acc = sess.run([self.classif_accuracy], feed_dict=valid_dict)
-                    print_str +=  ", Classification accuracy: "+str(class_acc)
-                if summarize:
-                    #summary = self._run_by_batch(sess,summary_op,{x: valid_data, y: valid_target},batch_size)
-                    summary_e = sess.run(summary_epoch,feed_dict=valid_dict)
-                    train_writer.add_summary(summary_e, global_step=i)
-                print "_________________"
-                print print_str
-                              # "{:.5f}".format(cross)
-
-
-                end_epoch = datetime.now()
-                print "Computation time =", str(end_epoch-start_epoch)
-
-                if self.loss_type != 'XE' or self.classif_metric_type is not None :
-                    cross= cross[0]
-                #Check if cross is NaN, if so, stop computations
-                if cross != cross :
-                    break
-
-
-
-                # Save the variables to disk.
-                if early_stop:
-                    if cross<best_cross:
-                        saved = saver_best.save(sess, os.path.join(ckpt_save_path,"best_model.ckpt"),global_step=i)
-                        best_cross = cross
-                        epoch_since_best = 0
+                        cross_batch = sess.run(self.loss, feed_dict=train_dict)
                     else:
-                        saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"),global_step=i)
-                        epoch_since_best += 1
+                        cross_batch = sess.run([self.loss,self.cross_entropy], feed_dict=train_dict)
+                    print_str = "Batch "+str(j)+ ", Cross entropy = "+str(cross_batch)
 
+                    print print_str
+                    if summarize:
+                        summary_b = sess.run(summary_batch,feed_dict=train_dict)
+                        train_writer.add_summary(summary_b,global_step=n_batch)
+                n_batch += 1
+
+
+            valid_dict = {x: valid_data, y: valid_target, seq_len: valid_lengths}
+            if self.loss_type in ["combined",'combined_norm','combined_cw',"XEtr_XEss"]:
+                valid_dict.update({k_m:valid_k_masks,k_l:valid_k_lists})
+
+
+            if self.loss_type == "XE":
+                cross = self._run_by_batch(sess,cross_entropy_list,valid_dict,batch_size)
+            else:
+                cross = sess.run([self.loss,self.cross_entropy], feed_dict=valid_dict)
+            print_str = "Epoch: " + str(i) + ", Cross Entropy = " + str(cross)
+
+            if summarize:
+                #summary = self._run_by_batch(sess,summary_op,{x: valid_data, y: valid_target},batch_size)
+                summary_e = sess.run(summary_epoch,feed_dict=valid_dict)
+                train_writer.add_summary(summary_e, global_step=i)
+            print "_________________"
+            print print_str
+                          # "{:.5f}".format(cross)
+
+
+            end_epoch = datetime.now()
+            print "Computation time =", str(end_epoch-start_epoch)
+
+            if self.loss_type != 'XE':
+                cross= cross[0]
+            #Check if cross is NaN, if so, stop computations
+            if cross != cross :
+                break
+
+
+
+            # Save the variables to disk.
+            if early_stop:
+                if cross<best_cross:
+                    saved = saver_best.save(sess, os.path.join(ckpt_save_path,"best_model.ckpt"),global_step=i)
+                    best_cross = cross
+                    epoch_since_best = 0
                 else:
-                    if i%save_step == 0 or i == epochs-1:
-                        saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"),global_step=i)
-                    else :
-                        saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"))
-                print("Model saved in file: %s" % saved)
+                    saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"),global_step=i)
+                    epoch_since_best += 1
 
-                i += 1
-                # Shuffle the dataset before next epochs
-                if not (chunks and memory):
-                    data.shuffle_one('train')
-                print "_________________"
+            else:
+                if i%save_step == 0 or i == epochs-1:
+                    saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"),global_step=i)
+                else :
+                    saved = saver.save(sess, os.path.join(ckpt_save_path,"model.ckpt"))
+            print("Model saved in file: %s" % saved)
+
+            i += 1
+            # Shuffle the dataset before next epochs
+            if not (chunks and memory):
+                data.shuffle_one('train')
+            print "_________________"
 
         return n_batch, n_epoch+epochs
 
@@ -2091,27 +1603,10 @@ class Model:
             output = np.transpose(notes_pred,[0,2,1])
         return output
 
-    def run_prediction2(self,dataset,save_path,n_model=None,batch_size=1,sigmoid=False):
-        "TODO : fix behaviour with _run_by_batch"
-        sess, saver = self.load(save_path,n_model)
-        suffix = self.suffix
-        pred = self.prediction
-        x = self.inputs
-
-        dataset = self._transpose_data(dataset)
-
-        notes_pred = self._run_by_batch(sess,pred,{x: dataset},batch_size,mean=False)
-        notes_pred = np.transpose(notes_pred,[0,2,1])
-
-        if sigmoid:
-            notes_pred=tf.sigmoid(notes_pred)
-
-        output = notes_pred.eval(session = sess)
-        return output
 
     def run_cross_entropy(self,dataset,len_list, save_path,n_model=None,batch_size=50,mean=True):
         sess, saver = self.load(save_path,n_model)
-        cross_entropy = self.cross_entropy2
+        cross_entropy = self.cross_entropy_list
 
         suffix = self.suffix
         x = self.inputs
@@ -2166,83 +1661,11 @@ class Model:
         k_mask = self.key_masks
         k_lists = self.key_lists
 
-        # names = [n.name for n in tf.get_default_graph().as_graph_def().node]
-        # for name in names:
-        #     print name
-        # test1 = tf.get_default_graph().get_tensor_by_name("test1"+suffix+":0")
-        # pred_test = test1[0]
-        # pred_test_s = tf.sigmoid(pred_test)
-        # y_test = test1[1]
-        # pred_test_result,pred_test_s_result,y_test_result = sess.run([pred_test,pred_test_s,y_test],feed_dict = {x: data, seq_len: len_list, y: targets} )
-        # pred_test_result = np.array(pred_test_result)
-        # y_test_result = np.array(y_test_result)
-        #
-        # XE_tr = sess.run(tf.nn.sigmoid_cross_entropy_with_logits(logits=pred_test, labels=y_test),feed_dict={pred_test:pred_test_result ,y_test:y_test_result})
-        # import matplotlib.pyplot as plt
-        # fig, [ax1,ax2,ax3] = plt.subplots(3,1)
-        # ax1.imshow(pred_test_s_result.transpose(),aspect='auto',origin='lower')
-        # ax2.imshow(y_test_result.transpose(),aspect='auto',origin='lower')
-        # ax3.imshow(XE_tr.transpose(),aspect='auto',origin='lower')
-        # plt.show()
-
-
-        # import display_utils
-        # display_utils.compare_piano_rolls(pred_test.transpose(),y_test.transpose(),[21,109],show=True)
-
-        # plt.imshow(test_1.transpose(),aspect='auto',origin='lower')
-        # plt.show()
-
-        # pred_test2 = self.prediction[0]
-        # pred_test2_s=tf.sigmoid(pred_test2)
-        # pred_test2_s = sess.run(pred_test2_s,feed_dict = {x: data, seq_len: len_list, y: targets} )
-        # y_test2 = y[0]
-        # y_test2_result = targets[0]
-        # XE_complete = sess.run(tf.nn.sigmoid_cross_entropy_with_logits(logits=pred_test2, labels=y_test2),feed_dict={pred_test2:pred_test_result ,y_test2:y_test2_result})
-        #
-
-
-        # indexes = []
-        # for vec1 in pred_test:
-        #     for i, vec2 in enumerate(pred_test2):
-        #         if np.sum(np.abs(vec1 - vec2)) <0.001:
-        #             indexes += [i]
-        #             break
-
-        # print indexes
-        # import matplotlib.pyplot as plt
-        # fig, [ax1,ax2] = plt.subplots(2,1)
-        # ax1.imshow(pred_test2.transpose(),aspect='auto',origin='lower')
-        # for time in indexes:
-        #     ax1.plot([time]*88,list(range(88)), linewidth=1, color='lightgrey')
-        # ax2.imshow(y_test2.transpose(),aspect='auto',origin='lower')
-        # for time in indexes:
-        #     ax2.plot([time]*88,list(range(88)), linewidth=1, color='lightgrey')
-        # plt.show()
-
-
-        ###### TESTS WITH KEY XE
-        # test1 = tf.get_default_graph().get_tensor_by_name("test1"+suffix+":0")
-        # pred_test = test1[0][0]
-        # pred_test2 = sess.run(pred_test,feed_dict = {x: data, seq_len: len_list, y: targets,k_mask:k_masks} )
-        # pred_out_test = sess.run(self.prediction,feed_dict = {x: data, seq_len: len_list, y: targets,k_mask:k_masks} )
-        # y_test = targets[0]
-        # import matplotlib.pyplot as plt
-        # fig, [ax1,ax2,ax3] = plt.subplots(3,1)
-        # ax1.imshow(pred_test2.transpose(),aspect='auto',origin='lower')
-        # ax2.imshow(pred_out_test[0].transpose(),aspect='auto',origin='lower')
-        # ax3.imshow(k_masks[0].transpose(),aspect='auto',origin='lower')
-        # plt.show()
 
         cross, cross_trans, cross_steady, cross_len, cross_active, cross_key , combined, combined_norm,precision, recall, F_measure = sess.run([cross, cross_trans, cross_steady, cross_len, cross_active, cross_key, combined, combined_norm, prec, rec, F0], feed_dict = {x: data, seq_len: len_list, y: targets, thresh: threshold,k_mask:k_masks,k_lists:key_lists,k_thresh:key_thresh, a_thresh:active_thresh} )
-        # print cross, cross_trans, cross_steady, cross_len, cross_active
-
-
-        # test2 = tf.get_default_graph().get_tensor_by_name("test2"+suffix+":0")
-        # test_1, test_2 = sess.run([test1,test2],feed_dict = {x: data, seq_len: len_list, y: targets} )
 
         return F_measure, precision, recall, cross, cross_trans, cross_steady, cross_len, cross_active,cross_key, combined, combined_norm
 
-        #return compute_eval_metrics(preds_thresh,targets,batch_size)
 
     def compute_eval_metrics_from_outputs(self,inputs,outputs,len_list,key_masks,key_lists,threshold,expected_measures=False,logits=False,trim_outputs=True):
         cross = self.cross_entropy
@@ -2387,8 +1810,6 @@ def make_model_param():
     model_param['batch_size']=50
 
     model_param['chunks']=None
-    model_param['memory']=False
-    model_param['conv']=False
     model_param['non_binary']=False
     model_param['grad_clip'] = None
     model_param['cell_type'] = 'LSTM'
@@ -2402,8 +1823,6 @@ def make_model_param():
 
     model_param['learning_rate_pre']=None
     model_param['epochs_pre']=None
-
-    model_param['classif_metric_type']=None
 
     return model_param
 
@@ -2422,17 +1841,3 @@ def make_train_param():
     train_param['early_stop_epochs']=15
     train_param['dataset_generator']=False
     return train_param
-
-
-
-
-
-# data = Dataset()
-# data.load_data('dummy_midi_data_mono/',note_min=48,note_max=72,fs=100,crop=True,norm=False)
-# data.split()
-#
-# model = Model(n_notes=25,n_steps=300,n_hidden=256,learning_rate=0.001)
-# model = make_model_from_dataset(data,n_hidden=256,learning_rate=0.001)
-# model.train(data.train,epochs=20,batch_size=50,save_path="./tmp/crop_unnorm/")
-# model.run_prediction(dataset="loul",save_path="./tmp/crop_unnorm/",n_model=19)
-# print model.run_cross_entropy(dataset="loul",save_path="./tmp/crop_unnorm/",n_model=99)

@@ -1,0 +1,5 @@
+numpy
+pretty_midi
+tensorflow=1.0.0
+tqdm
+scipy
