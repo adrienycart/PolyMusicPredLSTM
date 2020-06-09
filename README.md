@@ -7,7 +7,7 @@ This repository contains code for the publication:
 If you use any of this in your works, please cite:
 
 ```  
-    @article{ycart2019taslp,
+    @article{ycart2020taslp,
       author    = {Adrien Ycart and
               Emmanouil Benetos},
       title     = {Learning and Evaluation Methodologies for Polyphonic Music Sequence
