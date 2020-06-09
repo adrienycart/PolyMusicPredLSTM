@@ -2,16 +2,23 @@
 
 This repository contains code for the publication:
 
-> Adrien Ycart and Emmanouil Benetos. "Learning and Evaluation Methodologies for Polyphonic Music Sequence Prediction with LSTMs", _IEEE/ACM Transactions on Audio, Speech, and Language Processing (TASLP)_, Under Review.
+> Adrien Ycart and Emmanouil Benetos. "Learning and Evaluation Methodologies for Polyphonic Music Sequence Prediction with LSTMs", _IEEE/ACM Transactions on Audio, Speech, and Language Processing (TASLP)_, 28:1328-1341 (2020).
 
 If you use any of this in your works, please cite:
 
 ```  
     @article{ycart2019taslp,
-       Author = {Ycart, Adrien and Benetos, Emmanouil},    
-       Booktitle = {IEEE/ACM Transactions on Audio, Speech, and Language Processing (TASLP)},    
-       Title = {Learning and Evaluation Methodologies for Polyphonic Music Sequence Prediction with LSTMs},    
-    }  
+      author    = {Adrien Ycart and
+              Emmanouil Benetos},
+      title     = {Learning and Evaluation Methodologies for Polyphonic Music Sequence
+                    Prediction With LSTMs},
+      journal   = {{IEEE} {ACM} Transactions on Audio, Speech, and Language Processing},
+      volume    = {28},
+      pages     = {1328--1341},
+      year      = {2020},
+      url       = {https://doi.org/10.1109/TASLP.2020.2987130},
+      doi       = {10.1109/TASLP.2020.2987130},
+      }
 ```
 
 ## Getting started
